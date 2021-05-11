@@ -1,0 +1,346 @@
+#Project Outline
+#Data Processing
+  #Load
+  #Clean up NAs
+  #Discretize, scale, center, etc. 
+  #Cut out outcome variables from other use cases
+#EDA
+  #Enumerate variables associated with the status of women in the data set
+  #Find variables that have positive and negative correlations with status variables
+  #Extra Credit - countries that are improving, declining in status variables over time
+#Clustering
+  #Cluster countries based on the status varables
+  #Extra Credit - Consensus Clustering
+  #Interpret clusters
+#Model
+  #Create an interpretable model to drive recommendations that would improve status variables 
+  #Tuning grid, cv, ensemble
+#Summarize Key Learnings
+
+#Women Status Variables:
+  # pf_ss_women_fgm 	                  Female genital mutilation 16
+  # pf_ss_women_missing 	              Missing women 17 
+  # pf_ss_women_inheritance_widows 	    Inheritance rights for widows 18
+  # pf_ss_women_inheritance_daughters 	Inheritance rights for daughters 19
+  # pf_ss_women_inheritance 	          Inheritance 20
+  # pf_ss_women 	                      Women's security 21
+  # pf_movement_women 	                Women's movement 25
+  # pf_identity_sex_female 	            Female-to-female relationships 58
+  # pf_identity_sex 	                  Same-sex ralitionships 59
+
+#Outcome variables from other use cases (to be excluded from clustering, modeling)
+  # pf_score 	    Personal Freedom (score)
+  # pf_rank       Personal Freedom (rank)
+  # ef_score 	    Economic Freedom (score)
+  # ef_rank 	    Economic Freedom (rank)
+  # hf_score 	    Human Freedom (score)
+  # hf_rank 	    Human Freedom (rank)
+  # hf_quartile 	Human Freedom (quartile)
+
+library(purrr)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(zoo)
+library(factoextra)
+library(ggplot2)
+library(caret)
+library(rattle)
+library(lime)
+
+#Load data
+hfi_cc_2018 <- read.csv("~/Desktop/hfi_cc_2018.csv")
+hfi <- hfi_cc_2018
+str(hfi)
+summary(hfi)
+summary_df <- as.data.frame(summary(hfi))
+
+#Check for dupes
+dim(hfi)
+check_dupes <- unique(hfi)
+dim(check_dupes)
+#No dupes
+
+#Check for NAs
+check_nas <- as.data.frame(colSums(is.na(hfi)))
+View(check_nas)
+
+hfi %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_histogram()
+
+#Find Correlations in outcome variables 
+#install.packages("PerformanceAnalytics")
+library("PerformanceAnalytics")
+check_outcomes <- hfi[, c(16:21,25,58,59)]
+chart.Correlation(check_outcomes, histogram=TRUE, pch=19)
+#58,59 are not as related to the other variables
+#Recommendation is that 16,17,21 are kept
+
+#Create outcome variable based on collection of outcome variables
+#Remove rows that are NA
+completehfi <- hfi[!is.na(hfi$pf_ss_women),]
+completehfi <- completehfi[!is.na(completehfi$pf_ss_women_missing),]
+completehfi <- completehfi[!is.na(completehfi$pf_ss_women_fgm),]
+
+completehfi$women_stat <- rowSums(completehfi[,c(16,17,21)]/3)
+summary(completehfi)
+check_outcomes2 <- completehfi[, c(-(1:4),-16,-17,-21)]
+
+#Check most (or least) correlated features
+check_cor <- as.data.frame(cor(check_outcomes2$women_stat,check_outcomes2,use = "pairwise.complete.obs"))
+
+#Plot Correlations
+dev.off()
+ggplot(check_outcomes2, aes(check_outcomes2$pf_ss_women_inheritance , check_outcomes2$women_stat, color = pf_ss_women_inheritance )) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE, alpha = .4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")+
+  geom_smooth(method = "lm", se = TRUE) +
+  ggtitle("pf_ss_women_inheritance") +
+  xlab("pf_ss_women_inheritance") + ylab("women_stat")
+
+ggplot(check_outcomes2, aes(check_outcomes2$ef_legal_gender , check_outcomes2$women_stat, color = ef_legal_gender )) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE, alpha = .4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")+
+  geom_smooth(method = "lm", se = TRUE) +
+  ggtitle("ef_legal_gender") +
+  xlab("ef_legal_gender") + ylab("women_stat")
+
+ggplot(check_outcomes2, aes(check_outcomes2$pf_ss , check_outcomes2$women_stat, color = pf_ss )) +
+  geom_point(shape = 16, size = 5, show.legend = FALSE, alpha = .4) +
+  theme_minimal() +
+  scale_color_gradient(low = "#0091ff", high = "#f0650e")+
+  geom_smooth(method = "lm", se = TRUE) +
+  ggtitle("ef_legal_gender") +
+  xlab("pf_ss") + ylab("women_stat")
+
+#stat_ellipse(type = "norm", linetype = 2) 
+
+#Build model data set
+check_nas <- as.data.frame(colSums(is.na(completehfi)))
+model_data <- completehfi[, c(-2,-(5:7),-(18:19),-(27:28),-(35:36),-(38:39),-(41:42),-(53:55),-60)]
+check_nas1 <- as.data.frame(colSums(is.na(model_data)))
+model_data_p <- model_data
+check_nas2 <- as.data.frame(colSums(is.na(model_data_p)))
+model_data_p$pf_ss_disappearances_organized[is.na(model_data_p$pf_ss_disappearances_organized)] <- mean(model_data_p$pf_ss_disappearances_organized, na.rm = T)
+model_data_p2 <- model_data_p
+model_data_p2[] <- lapply(model_data_p2, na.aggregate)
+check_nas3 <- as.data.frame(colSums(is.na(model_data_p2)))
+model_data_p3 <- model_data_p2[, c(-1,-2)]
+str(model_data_p3)
+str(model_data_p2)
+summary(model_data_p2 )
+colnames(model_data_p4)
+
+########################################################################
+#Clustering - Pass 1
+model_data_p4 <- model_data_p2
+colnames(model_data_p4)
+model_data_p4$pasted <- paste(model_data_p2$year,model_data_p2$countries)
+clust_df <- model_data_p4[,c(14,44,101,103,106,107)]
+summary(clust_df)
+str(clust_df)
+km_output <- kmeans(clust_df[,-6], centers = 4, nstart = 25, iter.max = 100, algorithm = "Hartigan-Wong")
+fviz_cluster(km_output, data = clust_df[,-6])
+View(km_output$centers)
+
+#Create Elbow Chart
+wss <- function(k){
+  return(kmeans(clust_df[,-6], k, nstart = 25)$tot.withinss)}
+k_values <- 1:10
+wss_values <- purrr::map_dbl(k_values, wss)
+plot(x = k_values, y = wss_values, 
+     type = "b", frame = F,
+     xlab = "Number of clusters K",
+     ylab = "Total within-clusters sum of square")
+
+########################################################################
+#Clustering - Pass 2
+
+#Functions
+EnsurePackage <- function(x)
+{
+  x <- as.character(x)
+  if (!require(x,character.only = TRUE))
+  {
+    install.packages(pkgs=x,repos = "http://cran.r-project.org")
+    require(x,character.only = TRUE)
+  }
+}
+flattenCorrMatrix <- function(cormat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    Metric1 = rownames(cormat)[row(cormat)[ut]],
+    Metric2 = rownames(cormat)[col(cormat)[ut]],
+    Correlation  =(cormat)[ut]
+  )
+}
+wss <- function(k){
+  return(kmeans(hfi_clust, k, nstart = 25)$tot.withinss)
+}
+
+#Load the libraries
+EnsurePackage("cluster")
+EnsurePackage("factoextra")
+EnsurePackage("purrr")
+
+#Read in the file for the training set
+hfi_tot <- read.csv("~/Desktop/hfi_cc_2018.csv")
+
+#Clustering - KMeans
+hfi_clust <- hfi_tot[,c(62,119,121)]
+row.names(hfi_clust) <- paste(hfi_tot$ISO_code,substr(hfi_tot$year,3,4), sep = "_")
+hfi_clust <- na.omit(hfi_clust)
+
+#Determine the number of clusters
+k_values <- 1:15
+wss_values <- map_dbl(k_values, wss)
+
+plot(x = k_values, y = wss_values, 
+     type = "b", frame = F,
+     xlab = "Number of clusters K",
+     ylab = "Total within-clusters sum of square")
+#Build the k-means model
+model_k <- kmeans(hfi_clust, centers = 3, nstart = 25, iter.max = 100, algorithm = "Hartigan-Wong")
+
+#Print the centroids
+model_k$centers
+
+#Plot the Clusters
+clusplot(hfi_clust,model_k$cluster,color = TRUE,shade = TRUE,labels = 2,lines = 0)
+fviz_cluster(model_k,data = hfi_clust)
+table(names(model_k$cluster),model_k$cluster)
+
+#Correlation
+hfi_wom <- hfi_tot[,c(16:21,25,58,59)]
+cor_mat <- flattenCorrMatrix(cor(hfi_wom, use = "complete.obs"))
+cor_mat[order(cor_mat$Metric1,-cor_mat$Correlation),]
+
+#Violin Plot for Regions
+p <- ggplot(model_data_p5, aes(x=region, y=women_stat)) + 
+  geom_violin(trim=FALSE)
+p + stat_summary(fun.data="mean_sdl", mult=1, 
+                 geom="crossbar", width=0.2 )
+p + stat_summary(fun.data=mean_sdl, mult=1, 
+                 geom="pointrange", color="red")
+p + geom_jitter(shape=16, position=position_jitter(0.2)) 
+
+ggplot(data = model_data_p5 ) + 
+  geom_violin(aes(x = region, y = women_stat, fill = region ), trim = FALSE ) +   # kernel density plot
+  geom_boxplot(aes(x = region, y = women_stat ), width = 0.1) +   # box plot
+  xlab( " labels " ) +   # x axis title
+  ylab( " values " )    # y axis title 
+
+#Look at all frequency distributions
+model_data_p6 %>%
+  keep(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_histogram()
+
+########################################################################
+#Model Testing with Continuous Output - Pass 1
+train_control <- trainControl(method="cv", number=5)
+model_data_p5 <- model_data_p3[,c(-10,-11,-13)]
+str(model_data_p5, list.len=ncol(model_data_p5))
+check_nas5 <- as.data.frame(colSums(is.na(model_data_p5)))
+
+train_index <- createDataPartition(model_data_p5$women_stat, p = 0.7, list = FALSE)
+train_partition <- model_data_p5[train_index, ]
+test_partition <- model_data_p5[-train_index, ]
+
+#SVM Test Continuous
+set.seed(1234)
+start3 <- Sys.time()
+model_svm <- train(women_stat ~ ., data = train_partition,
+                   method = "svmLinear", 
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "boot", number = 25),
+                   tuneGrid = expand.grid(C = seq(1, 0.05))) 
+Sys.time() - start3
+
+print(model_svm) 
+varImp(model_svm)
+predict_svm <- predict(model_svm, newdata = test_partition,type = "raw") 
+postResample(pred = predict_svm, obs = test_partition$women_stat)
+
+#Random Forest Continuous
+start3 <- Sys.time()
+model_rf <- train(women_stat ~ ., data = train_partition, method = "rf",importance=T)
+Sys.time() - start3
+
+print(model_rf) 
+predict_rf <- predict(model_rf, newdata = test_partition,type = "raw")
+varImp(model_rf) 
+postResample(pred = predict_rf, obs = test_partition$women_stat)
+
+###################################################################################
+#Use Discrete Output variable
+model_data_p5$disc_ws <- discretize(model_data_p5$women_stat, method = "frequency", 
+                            breaks = 3, labels = c("low", "med", "high"))
+aggregate(model_data_p5[, 101], list(model_data_p5$disc_ws ), mean)
+model_data_p6 <- model_data_p5[,c(-101)]
+
+train_index2 <- createDataPartition(model_data_p6$disc_ws, p = 0.7, list = FALSE)
+train_partition2 <- model_data_p6[train_index2, ]
+test_partition2 <- model_data_p6[-train_index2, ]
+
+#SVM on Discrete
+set.seed(1234)
+start3 <- Sys.time()
+model_svm2 <- train(disc_ws ~ ., data = train_partition2,
+                   method = "svmLinear", 
+                   preProcess = c("center", "scale"),
+                   trControl = trainControl(method = "boot", number = 25),
+                   tuneGrid = expand.grid(C = seq(1, 0.05))) 
+Sys.time() - start3
+
+print(model_svm2) 
+varImp(model_svm2)
+predict_svm2 <- predict(model_svm2, newdata = test_partition2,type = "raw")
+confusionMatrix(predict_svm2, test_partition2$disc_ws)
+
+#Lime explanations
+# explainer <- lime(train_partition2, model_svm2, bin_continuous = TRUE, quantile_bins = FALSE)
+# explanation <- explain(train_partition2, explainer, n_labels = 1, n_features = 5)
+# explanation[,2:9]
+
+#Random Forest on Discrete
+start3 <- Sys.time()
+model_rf2 <- train(disc_ws ~ ., data = train_partition2, method = "rf",importance=T)
+Sys.time() - start3
+
+print(model_rf2) 
+predict_rf2 <- predict(model_rf2, newdata = test_partition2,type = "raw")
+varImp(model_rf2, scale = FALSE)
+confusionMatrix(predict_rf2, test_partition2$disc_ws)  
+
+#Lime explanations
+# explainer2 <- lime(train_partition2, model_rf2, bin_continuous = TRUE, quantile_bins = FALSE)
+# explanation2 <- explain(train_partition2, explainer2, n_labels = 1, n_features = 5)
+# explanation2[,2:9]
+
+#KNN on Discrete
+model_knn2 <- train(disc_ws ~ ., data = train_partition2, method = "knn",
+                    tuneGrid = data.frame(k = seq(1, 25)),
+                    trControl = trainControl(method = "repeatedcv", 
+                                             number = 10, repeats = 3)) 
+print(model_knn2)
+plot(model_knn2)
+predict_knn2 <- predict(model_knn2, newdata = test_partition2,type = "raw")
+confusionMatrix(predict_knn2, test_partition2$disc_ws) 
+varImp(model_knn2)  
+
+#Rpart on Discrete
+dt_model <- train(disc_ws ~ ., data = train_partition2, metric = "Accuracy", method = "rpart")
+print(dt_model)
+print(dt_model$finalModel)
+dt_predict <- predict(dt_model, newdata = test_partition2, type = "raw")
+table(train_partition2$disc_ws,dt_predict)
+fancyRpartPlot(dt_model$finalModel)
